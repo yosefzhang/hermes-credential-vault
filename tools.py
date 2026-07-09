@@ -12,13 +12,19 @@ from typing import Optional
 
 try:
     from .audit import AuditLog
-    from .constants import TOKEN_PATTERNS
-    from .system_clients import call_system
+    from .constants import (
+        TOKEN_PATTERNS,
+        AUTH_TYPE_SSO_COOKIE,
+    )
+    from .system_clients import call_system, call_system_with_cookies
     from .vault_core import VaultCore, SessionKeyCache, NotBoundError
 except ImportError:
     from audit import AuditLog  # type: ignore[no-redef]
-    from constants import TOKEN_PATTERNS  # type: ignore[no-redef]
-    from system_clients import call_system  # type: ignore[no-redef]
+    from constants import (  # type: ignore[no-redef]
+        TOKEN_PATTERNS,
+        AUTH_TYPE_SSO_COOKIE,
+    )
+    from system_clients import call_system, call_system_with_cookies  # type: ignore[no-redef]
     from vault_core import VaultCore, SessionKeyCache, NotBoundError  # type: ignore[no-redef]
 
 
@@ -171,6 +177,7 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
         )
 
     base_url = systems_cfg[system]["base_url"]
+    system_auth = (systems_cfg[system].get("auth") or "").lower()
 
     # 1. 检查 vault 解锁
     key = _session_cache.get(user_id)
@@ -183,7 +190,47 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
             ensure_ascii=False,
         )
 
-    # 2. 解密凭证（明文只在本函数栈上存在）
+    # 2a. SSO Cookie 路径 (v0.2.0)
+    if system_auth == AUTH_TYPE_SSO_COOKIE:
+        sso_provider = systems_cfg[system].get("sso_provider", "")
+        if not sso_provider:
+            return json.dumps(
+                {
+                    "error": "misconfigured_system",
+                    "message": f"system '{system}' 声明 auth=sso_cookie 但缺少 sso_provider 字段",
+                },
+                ensure_ascii=False,
+            )
+        try:
+            session = _vault.load_session(sso_provider, key)
+        except NotBoundError:
+            return json.dumps(
+                {
+                    "error": "sso_not_logged_in",
+                    "message": (
+                        f"provider '{sso_provider}' 尚未 sso-login。"
+                        f"请在飞书私聊发送 /vault sso-login {sso_provider}"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        cookies = session.get("cookies") or []
+
+        _audit.append(user_id, "api_call", f"{system} {method} {path} [sso:{sso_provider}]", key)
+
+        resp = await call_system_with_cookies(base_url, cookies, method, path, params)
+        return json.dumps(
+            {
+                "status_code": resp.status_code,
+                "headers": _filter_headers(resp.headers),
+                "body": resp.body,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+
+    # 2b. basic / bearer 路径（v0.1.x 逻辑）
+    # 解密凭证（明文只在本函数栈上存在）
     try:
         credential = _vault.load_credential(system, key)
     except NotBoundError:

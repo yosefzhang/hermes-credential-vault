@@ -26,6 +26,8 @@ _audit: AuditLog | None = None
 
 # 运行时系统声明缓存（由 config.yaml 决定 —— name -> {"base_url": ...}）
 _systems_config: dict = {}
+# v0.2.0: SSO providers 配置缓存
+_sso_providers_config: dict = {}
 
 
 def _load_plugin_config() -> dict:
@@ -80,6 +82,10 @@ def _normalize_systems(raw_systems) -> dict:
       systems:
         jira: https://xxx
 
+    v0.2.0 新增可选字段（dict 形式才支持）：
+      - auth: basic|bearer|sso_cookie（默认 basic/bearer 由 bind 时决定）
+      - sso_provider: 引用 sso_providers 下的 provider 名（仅 auth=sso_cookie 有意义）
+
     非 https:// 开头的 base_url 会记 warning 但仍然保留。
     """
     result: dict = {}
@@ -91,10 +97,16 @@ def _normalize_systems(raw_systems) -> dict:
             continue
         name_lower = name.strip().lower()
 
+        extras: dict = {}
         if isinstance(spec, str):
             base_url = spec.strip()
         elif isinstance(spec, dict):
             base_url = str(spec.get("base_url", "")).strip()
+            # 可选字段
+            if spec.get("auth"):
+                extras["auth"] = str(spec["auth"]).strip().lower()
+            if spec.get("sso_provider"):
+                extras["sso_provider"] = str(spec["sso_provider"]).strip().lower()
         else:
             logger.warning("systems.%s 配置格式非法（应为 string 或 dict），已跳过", name)
             continue
@@ -106,7 +118,67 @@ def _normalize_systems(raw_systems) -> dict:
         if not base_url.startswith(("http://", "https://")):
             logger.warning("systems.%s.base_url 未以 http(s):// 开头: %s", name, base_url)
 
-        result[name_lower] = {"base_url": base_url.rstrip("/")}
+        entry = {"base_url": base_url.rstrip("/")}
+        entry.update(extras)
+        result[name_lower] = entry
+
+    return result
+
+
+def _normalize_sso_providers(raw_providers) -> dict:
+    """规范化 config.yaml 里的 sso_providers 字段。
+
+    结构（每个 provider 必须是 dict）：
+      sso_providers:
+        quectel_sso:
+          login_trigger_url: https://devops.quectel.com/devops/
+          success_url_pattern: "**/devops/**"
+          cookie_domain: .quectel.com
+          form_selectors:
+            username: 'input[placeholder="Please Enter Username"]'
+            password: 'input[placeholder="Please Enter Password"]'
+            submit: 'button:has-text("Log In")'
+          token_cookie_name: quectel_token
+    """
+    result: dict = {}
+    if not isinstance(raw_providers, dict):
+        return result
+
+    required_top = ("login_trigger_url", "success_url_pattern", "cookie_domain", "form_selectors")
+    required_form = ("username", "password", "submit")
+
+    for name, spec in raw_providers.items():
+        if not name or not isinstance(name, str) or not isinstance(spec, dict):
+            logger.warning("sso_providers.%s 配置非法，已跳过", name)
+            continue
+        name_lower = name.strip().lower()
+
+        missing = [k for k in required_top if k not in spec]
+        if missing:
+            logger.warning(
+                "sso_providers.%s 缺少必填字段 %s，已跳过", name_lower, missing
+            )
+            continue
+
+        form = spec.get("form_selectors") or {}
+        if not isinstance(form, dict) or any(k not in form for k in required_form):
+            logger.warning(
+                "sso_providers.%s.form_selectors 缺少 username/password/submit，已跳过",
+                name_lower,
+            )
+            continue
+
+        result[name_lower] = {
+            "login_trigger_url": str(spec["login_trigger_url"]).strip(),
+            "success_url_pattern": str(spec["success_url_pattern"]).strip(),
+            "cookie_domain": str(spec["cookie_domain"]).strip(),
+            "form_selectors": {
+                "username": str(form["username"]),
+                "password": str(form["password"]),
+                "submit": str(form["submit"]),
+            },
+            "token_cookie_name": str(spec.get("token_cookie_name", "")).strip(),
+        }
 
     return result
 
@@ -114,9 +186,14 @@ def _normalize_systems(raw_systems) -> dict:
 def get_systems_config() -> dict:
     """返回运行时系统声明字典（副本，防止调用方误改）。
 
-    结构：{"jira": {"base_url": "https://..."}, ...}
+    结构：{"jira": {"base_url": "https://...", "auth"?: "...", "sso_provider"?: "..."}, ...}
     """
     return {k: dict(v) for k, v in _systems_config.items()}
+
+
+def get_sso_providers_config() -> dict:
+    """返回运行时 SSO providers 配置字典（副本）。"""
+    return {k: dict(v) for k, v in _sso_providers_config.items()}
 
 
 def register(ctx):
@@ -124,10 +201,11 @@ def register(ctx):
 
     由 Hermes PluginManager 在加载插件时自动调用。
     """
-    global _vault, _session_cache, _audit, _systems_config
+    global _vault, _session_cache, _audit, _systems_config, _sso_providers_config
 
     plugin_cfg = _load_plugin_config()
     _systems_config = _normalize_systems(plugin_cfg.get("systems") or {})
+    _sso_providers_config = _normalize_sso_providers(plugin_cfg.get("sso_providers") or {})
     if _systems_config:
         logger.info(
             "hermes-credential-vault 声明的系统: %s",
@@ -137,6 +215,11 @@ def register(ctx):
         logger.warning(
             "config.yaml 未声明任何 systems，call_external_system 将拒绝所有调用。"
             " 请在 plugins.entries.hermes-credential-vault.systems 下声明系统名和 base_url。"
+        )
+    if _sso_providers_config:
+        logger.info(
+            "hermes-credential-vault 声明的 sso_providers: %s",
+            ", ".join(sorted(_sso_providers_config.keys())),
         )
 
     vault_dir = _get_vault_dir(plugin_cfg)

@@ -14,7 +14,9 @@ try:
         CMD_PREFIX,
         AUTH_TYPE_BASIC,
         AUTH_TYPE_BEARER,
+        AUTH_TYPE_SSO_COOKIE,
         SUPPORTED_AUTH_TYPES,
+        SSO_REFRESH_THRESHOLD_SECONDS,
     )
     from .vault_core import (
         VaultCore,
@@ -32,7 +34,9 @@ except ImportError:
         CMD_PREFIX,
         AUTH_TYPE_BASIC,
         AUTH_TYPE_BEARER,
+        AUTH_TYPE_SSO_COOKIE,
         SUPPORTED_AUTH_TYPES,
+        SSO_REFRESH_THRESHOLD_SECONDS,
     )
     from vault_core import (  # type: ignore[no-redef]
         VaultCore,
@@ -100,6 +104,10 @@ async def dispatch_vault_command(text: str, user_id: str, event) -> str:
         "audit": cmd_audit,
         "help": cmd_help,
         "audit-log": cmd_audit,
+        # v0.2.0: SSO Session 管理
+        "sso-login": cmd_sso_login,
+        "sso-status": cmd_sso_status,
+        "sso-logout": cmd_sso_logout,
     }
 
     handler = handlers.get(subcommand)
@@ -532,6 +540,233 @@ async def slash_command_handler(raw_args: str) -> Optional[str]:
     在 gateway 场景下，实际拦截由 pre_gateway_dispatch hook 完成；
     此 handler 作为 CLI/TUI 场景的备选路径。
     """
-    if not raw_args or not raw_args.strip():
-        raw_args = "help"
-    return f"请在飞书私聊中使用 {CMD_PREFIX} {raw_args} 命令"
+
+
+# ============================================================================
+# v0.2.0: SSO Session 管理子命令
+# ============================================================================
+
+def _get_sso_providers_config() -> dict:
+    """读取 config.yaml 中 sso_providers 配置段（由 __init__.py 缓存）。"""
+    try:
+        from . import get_sso_providers_config
+    except ImportError:  # pragma: no cover
+        from __init__ import get_sso_providers_config  # type: ignore[no-redef]
+    return get_sso_providers_config()
+
+
+def _format_ttl(seconds: int) -> str:
+    """把秒数格式化成 '3 天 5 小时' 或 '2 小时 30 分'。"""
+    if seconds <= 0:
+        return "已过期"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days} 天 {hours} 小时"
+    if hours > 0:
+        return f"{hours} 小时 {minutes} 分"
+    return f"{minutes} 分"
+
+
+async def cmd_sso_login(user_id: str, args: list[str]) -> str:
+    """执行 SSO 登录，把 cookie 集合加密存到 vault。
+
+    用法：/vault sso-login <provider>
+
+    需要预先 /vault bind <provider> basic '<user>' '<pass>' 存过账密。
+    """
+    if len(args) < 1:
+        providers = sorted(_get_sso_providers_config().keys())
+        return (
+            f"用法: {CMD_PREFIX} sso-login <provider>\n"
+            f"可用 provider: {', '.join(providers) if providers else '(config.yaml 未声明)'}"
+        )
+
+    provider = args[0].lower()
+    providers_cfg = _get_sso_providers_config()
+    if provider not in providers_cfg:
+        return (
+            f"❌ provider '{provider}' 未在 config.yaml 中声明。\n"
+            f"请在 plugins.entries.hermes-credential-vault.sso_providers 下配置。\n"
+            f"当前已声明: {', '.join(sorted(providers_cfg.keys())) or '(空)'}"
+        )
+    provider_cfg = providers_cfg[provider]
+
+    key = _session_cache.get(user_id)
+    if key is None:
+        return f"❌ 请先 {CMD_PREFIX} unlock <PIN> 解锁 vault"
+
+    # 加载已 bind 的账密
+    try:
+        credential = _vault.load_credential(provider, key)
+    except NotBoundError:
+        return (
+            f"❌ 尚未为 provider '{provider}' 绑定账密。\n"
+            f"请先: {CMD_PREFIX} bind {provider} basic '<user>' '<pass>'"
+        )
+
+    auth_type = (credential.get("auth_type") or "").lower()
+    if auth_type != AUTH_TYPE_BASIC:
+        return (
+            f"❌ SSO 登录需要 basic 认证凭证（用户名+密码），"
+            f"但 '{provider}' 存的是 {auth_type}"
+        )
+
+    username = credential.get("username") or ""
+    password = credential.get("password") or ""
+    if not username or not password:
+        return "❌ 账密不完整，请重新 bind"
+
+    # 惰性 import sso_runner —— 避免装 Playwright 不用 SSO 的用户报错
+    try:
+        try:
+            from .sso_runner import run_sso_login, build_session_record, SsoLoginError
+        except ImportError:
+            from sso_runner import run_sso_login, build_session_record, SsoLoginError  # type: ignore[no-redef]
+    except Exception as e:
+        return f"❌ SSO runner 加载失败: {type(e).__name__}: {e}"
+
+    try:
+        cookies = await run_sso_login(provider_cfg, username, password)
+    except SsoLoginError as e:
+        _audit.append(user_id, "sso_login_fail", f"{provider}: {e}", key)
+        return f"❌ SSO 登录失败: {e}"
+    except Exception as e:
+        logger.exception("sso-login 未预期异常: %s", e)
+        _audit.append(user_id, "sso_login_fail", f"{provider}: {type(e).__name__}", key)
+        return f"❌ SSO 登录异常: {type(e).__name__}"
+    finally:
+        # 尽力清凭证引用
+        credential["username"] = ""
+        credential["password"] = ""
+        credential.clear()
+
+    if not cookies:
+        return "❌ 登录成功但未获取到目标域 cookie，请检查 provider.cookie_domain 配置"
+
+    token_cookie_name = provider_cfg.get("token_cookie_name", "")
+    session_record = build_session_record(provider, cookies, token_cookie_name)
+    _vault.store_session(provider, session_record, key)
+    _audit.append(user_id, "sso_login_ok", f"{provider} ({len(cookies)} cookies)", key)
+
+    # 组装用户可见回执
+    expires_at = session_record.get("expires_at") or 0
+    import time as _time
+    now = int(_time.time())
+    ttl = expires_at - now if expires_at > 0 else 0
+    ttl_line = f"Token 有效期至: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(expires_at))}（剩余 {_format_ttl(ttl)}）" if expires_at > 0 else "Token 有效期: 未知（session cookie）"
+
+    cookie_names = ", ".join(c.get("name", "?") for c in cookies)
+    return (
+        f"✅ SSO 会话已建立\n"
+        f"  Provider: {provider}\n"
+        f"  Cookie 覆盖域: {provider_cfg.get('cookie_domain', '?')}（{len(cookies)} 个 cookie: {cookie_names}）\n"
+        f"  {ttl_line}\n"
+        f"下次 agent 访问该域子系统时会自动使用此会话。"
+    )
+
+
+async def cmd_sso_status(user_id: str, args: list[str]) -> str:
+    """查看 SSO session 状态：/vault sso-status [<provider>]"""
+    key = _session_cache.get(user_id)
+    if key is None:
+        return f"❌ 请先 {CMD_PREFIX} unlock <PIN> 解锁 vault"
+
+    providers_cfg = _get_sso_providers_config()
+    active = set(_vault.list_sso_providers())
+
+    if args:
+        # 查单个 provider
+        provider = args[0].lower()
+        if provider not in active:
+            return f"❌ provider '{provider}' 无有效 session（未登录或已 sso-logout）"
+        try:
+            session = _vault.load_session(provider, key)
+        except Exception as e:
+            return f"❌ 读取 session 失败: {type(e).__name__}"
+
+        import time as _time
+        now = int(_time.time())
+        expires_at = session.get("expires_at") or 0
+        ttl = expires_at - now if expires_at > 0 else 0
+
+        lines = [
+            f"📋 SSO Session: {provider}",
+            f"  Cookie 数量: {len(session.get('cookies', []))}",
+            f"  创建时间: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(session.get('created_at', 0)))}",
+        ]
+        if expires_at > 0:
+            lines.append(f"  过期时间: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(expires_at))}")
+            lines.append(f"  剩余: {_format_ttl(ttl)}")
+            if 0 < ttl < SSO_REFRESH_THRESHOLD_SECONDS:
+                lines.append(f"  ⚠️ 即将过期，建议 {CMD_PREFIX} sso-login {provider} 重新登录")
+        else:
+            lines.append("  过期时间: 未知（session cookie）")
+
+        # 显示覆盖的 system
+        cover = [s for s, c in _get_sso_covered_systems(provider).items()]
+        if cover:
+            lines.append(f"  覆盖 systems: {', '.join(cover)}")
+        return "\n".join(lines)
+
+    # 查全部
+    if not providers_cfg:
+        return "📋 config.yaml 未声明任何 sso_providers"
+
+    lines = ["📋 SSO Providers 状态:"]
+    import time as _time
+    now = int(_time.time())
+    for provider in sorted(providers_cfg.keys()):
+        if provider in active:
+            try:
+                session = _vault.load_session(provider, key)
+                expires_at = session.get("expires_at") or 0
+                if expires_at > 0:
+                    ttl = expires_at - now
+                    mark = "⚠️" if 0 < ttl < SSO_REFRESH_THRESHOLD_SECONDS else "✅"
+                    lines.append(f"  {mark} {provider}: 剩余 {_format_ttl(ttl)}")
+                else:
+                    lines.append(f"  ✅ {provider}: 已登录（session cookie，TTL 未知）")
+            except Exception as e:
+                lines.append(f"  ⚠️ {provider}: session 读取失败 ({type(e).__name__})")
+        else:
+            lines.append(f"  ❌ {provider}: 未登录（{CMD_PREFIX} sso-login {provider}）")
+    return "\n".join(lines)
+
+
+async def cmd_sso_logout(user_id: str, args: list[str]) -> str:
+    """删除本地 session：/vault sso-logout <provider>"""
+    if len(args) < 1:
+        return f"用法: {CMD_PREFIX} sso-logout <provider>"
+
+    provider = args[0].lower()
+    key = _session_cache.get(user_id)
+    if key is None:
+        return f"❌ 请先 {CMD_PREFIX} unlock <PIN> 解锁 vault"
+
+    deleted = _vault.revoke_session(provider)
+    if not deleted:
+        return f"❌ provider '{provider}' 无 session 可删除"
+
+    _audit.append(user_id, "sso_logout", f"{provider}", key)
+    return (
+        f"✅ 已删除 {provider} 本地 session。\n"
+        f"⚠️ 服务端 session 未主动通知，仍会自然过期。"
+    )
+
+
+def _get_sso_covered_systems(provider: str) -> dict:
+    """返回 config.yaml 里 auth=sso_cookie 且 sso_provider=<provider> 的 system 字典。"""
+    try:
+        from . import get_systems_config
+    except ImportError:  # pragma: no cover
+        from __init__ import get_systems_config  # type: ignore[no-redef]
+    all_systems = get_systems_config()
+    return {
+        name: cfg
+        for name, cfg in all_systems.items()
+        if cfg.get("auth") == AUTH_TYPE_SSO_COOKIE
+        and cfg.get("sso_provider") == provider
+    }
+

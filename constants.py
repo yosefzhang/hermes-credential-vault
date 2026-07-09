@@ -33,7 +33,9 @@ PIN_MIN_LENGTH = 8
 
 AUTH_TYPE_BASIC = "basic"
 AUTH_TYPE_BEARER = "bearer"
-SUPPORTED_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER)
+AUTH_TYPE_SSO_COOKIE = "sso_cookie"
+SUPPORTED_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER)  # bind 命令支持的 auth 类型
+ALL_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER, AUTH_TYPE_SSO_COOKIE)
 
 # 注：系统白名单不再在此定义。
 # 系统由 config.yaml → plugins.entries.hermes-credential-vault.systems 动态声明。
@@ -75,6 +77,11 @@ AUDIT_STEM = "audit.log"
 
 # 文件扩展名
 ENC_EXT = ".enc"
+SESSION_ENC_SUFFIX = ".session.enc"    # v0.2.0: SSO cookie 集合的存储后缀
+
+# SSO 相关
+SSO_LOGIN_TIMEOUT_SECONDS = 30         # Playwright 子进程登录超时
+SSO_REFRESH_THRESHOLD_SECONDS = 24 * 3600  # token 剩余 < 24h 时提示用户
 
 # 固定校验字符串（用于 .verify 文件）
 VERIFY_PLAINTEXT = b"VAULT_VERIFY_MAGIC_V1"

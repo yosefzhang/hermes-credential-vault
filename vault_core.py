@@ -28,6 +28,7 @@ try:
         PIN_MIN_LENGTH,
         SALT_LEN,
         SALT_FILE,
+        SESSION_ENC_SUFFIX,
         SESSION_TTL_SECONDS,
         VERIFY_FILE,
         VERIFY_PLAINTEXT,
@@ -44,6 +45,7 @@ except ImportError:
         PIN_MIN_LENGTH,
         SALT_LEN,
         SALT_FILE,
+        SESSION_ENC_SUFFIX,
         SESSION_TTL_SECONDS,
         VERIFY_FILE,
         VERIFY_PLAINTEXT,
@@ -220,11 +222,76 @@ class VaultCore:
         result = []
         for child in sorted(self._vault_dir.iterdir()):
             name = child.name
-            if name.endswith(ENC_EXT) and not name.startswith("."):
+            # 只匹配 <system>.enc，排除 <provider>.session.enc（v0.2 SSO session 文件）
+            if (
+                name.endswith(ENC_EXT)
+                and not name.endswith(SESSION_ENC_SUFFIX)
+                and not name.startswith(".")
+            ):
                 system = name[:-len(ENC_EXT)]
                 if system in reserved_stems:
                     continue
                 result.append(system)
+        return result
+
+    # -------- v0.2.0: SSO Session 加密存取 --------
+
+    def store_session(
+        self, provider: str, session_data: dict, derived_key: bytes
+    ) -> None:
+        """加密存储 SSO session 数据到 <provider>.session.enc 文件。
+
+        Args:
+            provider: SSO provider 名（如 ``quectel_sso``）
+            session_data: session json（含 cookies、expires_at、created_at 等）
+            derived_key: 由 PIN 派生的 AES key
+        """
+        payload = json.dumps(session_data, ensure_ascii=False)
+        enc_path = self._vault_dir / f"{provider}{SESSION_ENC_SUFFIX}"
+        _encrypt_and_write(derived_key, payload.encode("utf-8"), enc_path)
+
+    def load_session(self, provider: str, derived_key: bytes) -> dict:
+        """解密 <provider>.session.enc 返回 session 字典。
+
+        Returns:
+            session json dict
+
+        Raises:
+            NotBoundError: 该 provider 尚未 sso-login
+        """
+        enc_path = self._vault_dir / f"{provider}{SESSION_ENC_SUFFIX}"
+        if not enc_path.exists():
+            raise NotBoundError(
+                f"provider '{provider}' 未 sso-login（{enc_path.name} 不存在）"
+            )
+        plaintext = _decrypt_file(derived_key, enc_path)
+        return json.loads(plaintext.decode("utf-8"))
+
+    def revoke_session(self, provider: str) -> bool:
+        """删除 <provider>.session.enc 文件（即 sso-logout）。
+
+        Returns:
+            True 删除成功；False 文件不存在
+        """
+        enc_path = self._vault_dir / f"{provider}{SESSION_ENC_SUFFIX}"
+        if not enc_path.exists():
+            return False
+        enc_path.unlink()
+        return True
+
+    def has_session(self, provider: str) -> bool:
+        """判断 provider 是否已有 session 文件（不解密）。"""
+        return (self._vault_dir / f"{provider}{SESSION_ENC_SUFFIX}").exists()
+
+    def list_sso_providers(self) -> list[str]:
+        """扫描目录列出已有 session 的 provider 名（不涉及解密）。"""
+        if not self._vault_dir.exists():
+            return []
+        result = []
+        for child in sorted(self._vault_dir.iterdir()):
+            name = child.name
+            if name.endswith(SESSION_ENC_SUFFIX) and not name.startswith("."):
+                result.append(name[: -len(SESSION_ENC_SUFFIX)])
         return result
 
 

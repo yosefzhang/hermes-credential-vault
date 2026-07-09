@@ -85,6 +85,92 @@ async def call_system(
     )
 
 
+async def call_system_with_cookies(
+    base_url: str,
+    cookies: list[dict],
+    method: str,
+    path: str,
+    params: dict | None = None,
+) -> Response:
+    """SSO 会话路径：用 vault 里存的 cookie 集合发起 HTTP 请求。
+
+    与 call_system 的区别：不构造 Authorization header，而是把 cookies 拼成
+    Cookie header 塞到请求上。
+
+    Args:
+        base_url: 系统 base URL
+        cookies: Playwright cookie dict 列表（含 name/value）
+        method: HTTP 方法
+        path: API 路径
+        params: query params 或 JSON body
+
+    Returns:
+        Response 对象
+    """
+    params = params or {}
+    url = f"{base_url.rstrip('/')}{path}" if path.startswith("/") else f"{base_url.rstrip('/')}/{path}"
+
+    # 拼 Cookie header
+    cookie_str = "; ".join(
+        f"{c.get('name')}={c.get('value')}"
+        for c in cookies
+        if c.get("name") and c.get("value") is not None
+    )
+    if not cookie_str:
+        return Response(400, {}, {"error": "no_valid_cookies_in_session"})
+
+    headers = {
+        "Cookie": cookie_str,
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, follow_redirects=False) as client:
+        try:
+            if method == "GET":
+                resp = await client.get(url, headers=headers, params=params)
+            elif method in ("POST", "PUT", "PATCH"):
+                headers["Content-Type"] = "application/json"
+                resp = await client.request(method, url, headers=headers, json=params)
+            elif method == "DELETE":
+                resp = await client.delete(url, headers=headers)
+            else:
+                return Response(400, {}, {"error": f"不支持的 HTTP 方法: {method}"})
+        except httpx.TimeoutException:
+            logger.warning("SSO HTTP 请求超时: %s %s", method, url)
+            return Response(504, {}, {"error": "请求超时"})
+        except httpx.RequestError as e:
+            logger.warning("SSO HTTP 请求失败: %s %s — %s", method, url, e)
+            return Response(0, {}, {"error": f"请求失败: {e}"})
+
+    # 检测被 SSO 服务端踢回登录页的情况
+    if resp.status_code in (301, 302, 303, 307, 308):
+        location = resp.headers.get("location", "")
+        if "sso" in location.lower() or "login" in location.lower():
+            return Response(
+                401,
+                dict(resp.headers),
+                {
+                    "error": "sso_session_expired",
+                    "message": (
+                        f"SSO session 已过期（被重定向到 {location[:100]}）。"
+                        "请在飞书私聊发送 /vault sso-login <provider> 重新登录"
+                    ),
+                    "redirect_to": location,
+                },
+            )
+
+    try:
+        body = resp.json()
+    except Exception:
+        body = resp.text
+
+    return Response(
+        status_code=resp.status_code,
+        headers=dict(resp.headers),
+        body=body,
+    )
+
+
 async def _http_call(
     base_url: str,
     credential: dict,
