@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Vault runtime data (never commit real credentials or vault state)
+*.vault
+*.vault.bak
+*-vault/
+data/
+runtime/
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Development reference material (not part of the plugin runtime)
+_reference/
