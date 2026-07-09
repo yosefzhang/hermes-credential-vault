@@ -1,5 +1,5 @@
 name: hermes-credential-vault
-version: 0.1.0
+version: 0.1.1
 description: Per-user encrypted credential vault for enterprise system tokens (JIRA / Confluence / PMS). Credentials never enter agent memory, session store, or LLM context.
 author: Yosef & Yosephine
 provides_tools:

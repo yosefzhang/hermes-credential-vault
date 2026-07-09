@@ -132,6 +132,26 @@ async def dispatch_vault_command(text: str, user_id: str, event) -> str:
 
 
 # ============================================================================
+# bind 命令输入清洗
+# ============================================================================
+
+# Markdown 链接：[text](url) —— 飞书客户端会自动把邮箱格式化成这种形式
+_MARKDOWN_LINK_RE = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
+
+
+def _strip_markdown_link(value: str) -> tuple[str, bool]:
+    """从 markdown 链接 [text](url) 中提取 text；不是链接则原样返回。
+
+    返回 (clean_value, was_stripped)。
+    按 Q1/Q2 决策：所有 [text](url) 都取 text，不区分 mailto/http/其他。
+    """
+    m = _MARKDOWN_LINK_RE.match(value.strip())
+    if m is None:
+        return value, False
+    return m.group(1).strip(), True
+
+
+# ============================================================================
 # bind 命令引号校验
 # ============================================================================
 
@@ -275,6 +295,12 @@ async def cmd_bind(user_id: str, args: list[str]) -> str:
         username, password = args[2], args[3]
         if not username or not password:
             return "❌ username 和 password 不能为空"
+
+        # 清洗 username 里的 markdown 链接（飞书客户端会把邮箱格式化成 [x](mailto:x)）
+        username, username_stripped = _strip_markdown_link(username)
+        if not username:
+            return "❌ username 清洗后为空，请检查输入"
+
         credential = {
             "auth_type": AUTH_TYPE_BASIC,
             "username": username,
@@ -290,6 +316,7 @@ async def cmd_bind(user_id: str, args: list[str]) -> str:
             "auth_type": AUTH_TYPE_BEARER,
             "token": token,
         }
+        username_stripped = False
 
     # 4. 加密写入
     try:
@@ -299,7 +326,14 @@ async def cmd_bind(user_id: str, args: list[str]) -> str:
         return f"❌ 绑定失败: {type(e).__name__}"
 
     _audit.append(user_id, "bind", f"绑定 {system} ({auth_type})", key)
-    return f"✅ 已绑定 {system}（{auth_type} 认证）"
+    reply = f"✅ 已绑定 {system}（{auth_type} 认证）"
+    if auth_type == AUTH_TYPE_BASIC and username_stripped:
+        reply += (
+            f"\n⚠️ 检测到 username 被格式化为 markdown 链接，"
+            f"已自动提取 `{credential['username']}`。\n"
+            f"如提取结果不符预期，请 {CMD_PREFIX} revoke {system} 后重新 bind。"
+        )
+    return reply
 
 
 async def cmd_unlock(user_id: str, args: list[str]) -> str:
