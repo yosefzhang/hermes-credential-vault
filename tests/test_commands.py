@@ -102,7 +102,7 @@ class TestCmdBind:
         from commands import _session_cache
         _session_cache.unlock("user1", b"a" * 32)
         result = await commands.cmd_bind("user1", ["github", "bearer", "tok"])
-        assert "未在 config.yaml" in result or "未在" in result
+        assert "无法确定" in result
 
     @pytest.mark.asyncio
     async def test_bind_missing_auth_type(self):
@@ -129,7 +129,7 @@ class TestCmdBind:
         from commands import _session_cache, _vault
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("user1", key)
-        result = await commands.cmd_bind("user1", ["jira", "bearer", "mytoken123"])
+        result = await commands.cmd_bind("user1", ["jira", "bearer", "mytoken123", "https://jira.example.com"])
         assert "✅" in result
         assert "bearer" in result
         assert _vault.list_bound_systems() == ["jira"]
@@ -146,7 +146,7 @@ class TestCmdBind:
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("user1", key)
         result = await commands.cmd_bind(
-            "user1", ["jira", "basic", "yosef@example.com", "MyP@ssw0rd"]
+            "user1", ["jira", "basic", "yosef@example.com", "MyP@ssw0rd", "https://jira.example.com"]
         )
         assert "✅" in result
         assert "basic" in result
@@ -154,9 +154,8 @@ class TestCmdBind:
         assert cred["auth_type"] == "basic"
         assert cred["username"] == "yosef@example.com"
         assert cred["password"] == "MyP@ssw0rd"
-        # 千万不能有旧字段
+        # 千万不能有旧 token 字段
         assert "token" not in cred
-        assert "base_url" not in cred
 
     @pytest.mark.asyncio
     async def test_bind_basic_missing_password(self, vault):
@@ -166,7 +165,6 @@ class TestCmdBind:
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("user1", key)
         result = await commands.cmd_bind("user1", ["jira", "basic", "user_only"])
-        assert "basic" in result
         assert "❌" in result
 
     @pytest.mark.asyncio
@@ -177,7 +175,6 @@ class TestCmdBind:
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("user1", key)
         result = await commands.cmd_bind("user1", ["jira", "bearer"])
-        assert "bearer" in result
         assert "❌" in result
 
 
@@ -201,15 +198,6 @@ class TestCmdUnlock:
         result = await commands.cmd_unlock("user1", ["TestVault@2026!"])
         assert "✅" in result
         assert _session_cache.is_unlocked("user1")
-
-    @pytest.mark.asyncio
-    async def test_lock_success(self):
-        import commands
-        from commands import _session_cache
-        _session_cache.unlock("user1", b"a" * 32)
-        result = await commands.cmd_lock("user1", [])
-        assert "✅" in result
-        assert not _session_cache.is_unlocked("user1")
 
 
 # ============================================================================
@@ -278,66 +266,8 @@ class TestCmdList:
         )
         _session_cache.unlock("user1", key)
         result = await commands.cmd_list("user1", [])
-        # config 为空 → 显示 (空) 提示
-        assert "(空)" in result
-        # 不再显示孤儿
-        assert "old-sys" not in result
-
-
-# ============================================================================
-# status
-# ============================================================================
-
-class TestCmdStatus:
-
-    @pytest.mark.asyncio
-    async def test_status_initialized(self):
-        import commands
-        result = await commands.cmd_status("user1", [])
-        assert "初始化: 是" in result
-        assert "解锁: 否" in result
-
-    @pytest.mark.asyncio
-    async def test_status_unlocked(self):
-        import commands
-        from commands import _session_cache
-        _session_cache.unlock("user1", b"a" * 32)
-        result = await commands.cmd_status("user1", [])
-        assert "解锁: 是" in result
-        assert "剩余有效时间" in result
-
-
-# ============================================================================
-# revoke
-# ============================================================================
-
-class TestCmdRevoke:
-
-    @pytest.mark.asyncio
-    async def test_revoke_when_locked(self):
-        import commands
-        result = await commands.cmd_revoke("user1", ["jira"])
-        assert "请先" in result
-
-    @pytest.mark.asyncio
-    async def test_revoke_nonexistent(self, vault):
-        import commands
-        from commands import _session_cache, _vault
-        key = _vault.verify_pin("TestVault@2026!")
-        _session_cache.unlock("user1", key)
-        result = await commands.cmd_revoke("user1", ["nonexistent"])
-        assert "未绑定" in result
-
-    @pytest.mark.asyncio
-    async def test_revoke_success(self, vault):
-        import commands
-        from commands import _session_cache, _vault
-        key = _vault.verify_pin("TestVault@2026!")
-        _vault.store_credential("jira", {"auth_type": "bearer", "token": "tok"}, key)
-        _session_cache.unlock("user1", key)
-        result = await commands.cmd_revoke("user1", ["jira"])
-        assert "✅" in result
-        assert "jira" not in _vault.list_bound_systems()
+        # config 为空但 vault 有绑定 → 展示 vault 中的 system
+        assert "old-sys" in result  # 新行为：展示 vault 绑定的 system
 
 
 # ============================================================================
@@ -465,7 +395,7 @@ class TestBindQuoteEnforcement:
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("u1", key)
         result = await commands.dispatch_vault_command(
-            "/vault bind jira bearer 'ATATT3xxxxxxxxxx'", "u1", None
+            "/vault bind jira bearer 'ATATT3xxxxxxxxxx' 'https://jira.example.com'", "u1", None
         )
         assert "✅" in result
         cred = _vault.load_credential("jira", key)
@@ -504,7 +434,7 @@ class TestBindQuoteEnforcement:
         key = _vault.verify_pin("TestVault@2026!")
         _session_cache.unlock("u1", key)
         result = await commands.dispatch_vault_command(
-            "/vault bind jira basic 'yosef@example.com' 'MyP@$$w0rd!'", "u1", None
+            "/vault bind jira basic 'yosef@example.com' 'MyP@$$w0rd!' 'https://jira.example.com'", "u1", None
         )
         assert "✅" in result
         cred = _vault.load_credential("jira", key)
@@ -520,7 +450,7 @@ class TestBindQuoteEnforcement:
         _session_cache.unlock("u1", key)
         weird_password = 'p@$$w0rd!#;&|\\path'
         result = await commands.dispatch_vault_command(
-            f"/vault bind jira basic 'u' '{weird_password}'", "u1", None
+            f"/vault bind jira basic 'u' '{weird_password}' 'https://jira.example.com'", "u1", None
         )
         assert "✅" in result
         cred = _vault.load_credential("jira", key)

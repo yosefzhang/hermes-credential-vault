@@ -33,9 +33,10 @@ PIN_MIN_LENGTH = 8
 
 AUTH_TYPE_BASIC = "basic"
 AUTH_TYPE_BEARER = "bearer"
-AUTH_TYPE_SSO_COOKIE = "sso_cookie"
-SUPPORTED_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER)  # bind 命令支持的 auth 类型
-ALL_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER, AUTH_TYPE_SSO_COOKIE)
+AUTH_TYPE_SSO = "sso"             # bind 命令 + 存储 + config.yaml 统一用 sso
+AUTH_TYPE_SSO_COOKIE = AUTH_TYPE_SSO  # v0.3.0 向后兼容别名（旧代码引用）
+SUPPORTED_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER, AUTH_TYPE_SSO)  # bind 命令支持的 auth 类型
+ALL_AUTH_TYPES = (AUTH_TYPE_BASIC, AUTH_TYPE_BEARER, AUTH_TYPE_SSO)
 
 # 注：系统白名单不再在此定义。
 # 系统由 config.yaml → plugins.entries.hermes-credential-vault.systems 动态声明。

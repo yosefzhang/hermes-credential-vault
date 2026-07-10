@@ -14,7 +14,7 @@ try:
     from .audit import AuditLog
     from .constants import (
         TOKEN_PATTERNS,
-        AUTH_TYPE_SSO_COOKIE,
+        AUTH_TYPE_SSO,
     )
     from .system_clients import call_system, call_system_with_cookies
     from .vault_core import VaultCore, SessionKeyCache, NotBoundError
@@ -22,7 +22,7 @@ except ImportError:
     from audit import AuditLog  # type: ignore[no-redef]
     from constants import (  # type: ignore[no-redef]
         TOKEN_PATTERNS,
-        AUTH_TYPE_SSO_COOKIE,
+        AUTH_TYPE_SSO,
     )
     from system_clients import call_system, call_system_with_cookies  # type: ignore[no-redef]
     from vault_core import VaultCore, SessionKeyCache, NotBoundError  # type: ignore[no-redef]
@@ -176,8 +176,9 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
             ensure_ascii=False,
         )
 
-    base_url = systems_cfg[system]["base_url"]
-    system_auth = (systems_cfg[system].get("auth") or "").lower()
+    base_url = systems_cfg.get(system, {}).get("base_url", "")
+    system_auth = (systems_cfg.get(system, {}).get("auth") or "").lower()
+    sso_provider = systems_cfg.get(system, {}).get("sso_provider", "")
 
     # 1. 检查 vault 解锁
     key = _session_cache.get(user_id)
@@ -190,14 +191,43 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
             ensure_ascii=False,
         )
 
-    # 2a. SSO Cookie 路径 (v0.2.0)
-    if system_auth == AUTH_TYPE_SSO_COOKIE:
-        sso_provider = systems_cfg[system].get("sso_provider", "")
+    # 动态 system：从 vault 读取 base_url / auth_type / sso_provider
+    if system not in systems_cfg or (not system_auth and not base_url):
+        try:
+            dyn_cred = _vault.load_credential(system, key)
+            if not base_url:
+                base_url = dyn_cred.get("base_url", "")
+            if not system_auth:
+                system_auth = (dyn_cred.get("auth_type") or "").lower()
+                sso_provider = dyn_cred.get("sso_provider", "")
+        except (NotBoundError, Exception):
+            return json.dumps(
+                {
+                    "error": "system_not_found",
+                    "message": (
+                        f"系统 '{system}' 未配置。"
+                        f"请先 bind: /vault bind {system} basic|bearer|sso ..."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+    if not base_url:
+        return json.dumps(
+            {
+                "error": "no_base_url",
+                "message": f"系统 '{system}' 未配置 base_url，无法发起 API 调用。",
+            },
+            ensure_ascii=False,
+        )
+
+    # 2a. SSO Cookie 路径
+    if system_auth == AUTH_TYPE_SSO:
         if not sso_provider:
             return json.dumps(
                 {
                     "error": "misconfigured_system",
-                    "message": f"system '{system}' 声明 auth=sso_cookie 但缺少 sso_provider 字段",
+                    "message": f"system '{system}' 声明 auth=sso 但缺少 sso_provider 字段",
                 },
                 ensure_ascii=False,
             )
@@ -208,8 +238,8 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
                 {
                     "error": "sso_not_logged_in",
                     "message": (
-                        f"provider '{sso_provider}' 尚未 sso-login。"
-                        f"请在飞书私聊发送 /vault sso-login {sso_provider}"
+                        f"system '{system}' 需要 SSO 登录（provider={sso_provider}）。"
+                        f"请在飞书私聊发送 /vault sso-login {system}"
                     ),
                 },
                 ensure_ascii=False,

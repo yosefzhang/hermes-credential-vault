@@ -22,6 +22,36 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# v0.3.0: SSO Provider 注册表（硬编码内置 provider 的登录配置）
+# ============================================================================
+
+SSO_PROVIDERS: dict[str, dict] = {
+    "quectel_sso": {
+        "login_trigger_url": "https://devops.quectel.com/devops/",
+        "success_url_pattern": "**/*.quectel.com/**",
+        "cookie_domain": ".quectel.com",
+        "form_selectors": {
+            "username": 'input[placeholder="Please Enter Username"]',
+            "password": 'input[placeholder="Please Enter Password"]',
+            "submit": 'button:has-text("Log In")',
+        },
+        "token_cookie_name": "quectel_token",
+    },
+}
+
+
+def get_sso_provider(name: str) -> dict | None:
+    """从注册表取指定 provider 的配置（副本）。"""
+    cfg = SSO_PROVIDERS.get(name.lower())
+    return dict(cfg) if cfg else None
+
+
+def list_sso_providers() -> list[str]:
+    """返回注册表中所有 provider 名。"""
+    return sorted(SSO_PROVIDERS.keys())
+
+
 class SsoLoginError(Exception):
     """SSO 登录失败。"""
 
