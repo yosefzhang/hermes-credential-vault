@@ -96,13 +96,24 @@ class TestCmdBind:
         assert "unlock" in result
 
     @pytest.mark.asyncio
-    async def test_bind_undeclared_system(self):
-        """system 未在 config.yaml 中声明 → 拒绝。"""
+    async def test_bind_missing_base_url(self):
+        """缺少 base_url → 拒绝。"""
         import commands
         from commands import _session_cache
         _session_cache.unlock("user1", b"a" * 32)
-        result = await commands.cmd_bind("user1", ["github", "bearer", "tok"])
-        assert "无法确定" in result
+        result = await commands.cmd_bind("user1", ["jira", "bearer", "tok"])
+        assert "缺少 base_url" in result
+
+    @pytest.mark.asyncio
+    async def test_bind_any_system_with_base_url(self):
+        """提供 base_url 后，即使未在 config.yaml 声明也可绑定。"""
+        import commands
+        from commands import _session_cache, _vault
+        key = _vault.verify_pin("TestVault@2026!")
+        _session_cache.unlock("user1", key)
+        result = await commands.cmd_bind("user1", ["github", "bearer", "tok", "https://github.example.com"])
+        assert "✅" in result
+        assert "github" in result
 
     @pytest.mark.asyncio
     async def test_bind_missing_auth_type(self):

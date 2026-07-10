@@ -165,9 +165,9 @@ def _validate_bind_quotes(raw_text: str) -> Optional[str]:
     """强制 bind 命令的凭证字段（username/password/token）用单引号包裹。
 
     规则：
-      /vault bind <system> basic '<username>' '<password>'
-      /vault bind <system> bearer '<token>'
-      /vault bind <system> sso <provider>  [<base_url>]   # sso 类型无凭证需要包裹
+      /vault bind <system> basic '<username>' '<password>' <base_url>
+      /vault bind <system> bearer '<token>' <base_url>
+      /vault bind <system> sso <provider> <base_url>   # sso 类型无凭证需要包裹
 
     - 允许单引号 '...'
     - 禁止双引号 "..."（避免反斜杠转义歧义）
@@ -195,29 +195,29 @@ def _validate_bind_quotes(raw_text: str) -> Optional[str]:
 
     quote_hint = (
         "\n📝 凭证字段必须用单引号 '...' 包裹（禁止双引号 \"...\"）\n"
-        f"  {CMD_PREFIX} bind <system> basic '<username>' '<password>'\n"
-        f"  {CMD_PREFIX} bind <system> bearer '<token>'\n"
-        f"  {CMD_PREFIX} bind <system> sso <provider>\n"
+        f"  {CMD_PREFIX} bind <system> basic '<username>' '<password>' <base_url>\n"
+        f"  {CMD_PREFIX} bind <system> bearer '<token>' <base_url>\n"
+        f"  {CMD_PREFIX} bind <system> sso <provider> <base_url>\n"
         "示例:\n"
-        f"  {CMD_PREFIX} bind jira basic 'yosef@example.com' 'MyP@ssw0rd!'\n"
-        f"  {CMD_PREFIX} bind jira bearer 'ATATT3xFfGF0...'\n"
-        f"  {CMD_PREFIX} bind devops sso quectel_sso"
+        f"  {CMD_PREFIX} bind jira basic 'yosef@example.com' 'MyP@ssw0rd!' https://ticket.example.com\n"
+        f"  {CMD_PREFIX} bind jira bearer 'ATATT3xFfGF0...' https://ticket.example.com\n"
+        f"  {CMD_PREFIX} bind devops sso quectel_sso https://devops.example.com"
     )
 
     if auth_type == "basic":
-        # 期望 2 个单引号段：'user' 'pass' [+ 可选 'base_url' 或 base_url]
-        pattern = r"^'([^']*)'\s+'([^']*)'(?:\s+(?:'[^']*'|\S+))?\s*$"
+        # 期望 2 个单引号段：'user' 'pass' + base_url
+        pattern = r"^'([^']*)'\s+'([^']*)'\s+\S+\s*$"
         if not re.match(pattern, rest):
             return "❌ basic 认证的 username 和 password 必须用单引号 '...' 包裹。" + quote_hint
 
     elif auth_type == "bearer":
-        # 期望 1 个单引号段：'token' [+ 可选 'base_url' 或 base_url]
-        pattern = r"^'([^']*)'(?:\s+(?:'[^']*'|\S+))?\s*$"
+        # 期望 1 个单引号段：'token' + base_url
+        pattern = r"^'([^']*)'\s+\S+\s*$"
         if not re.match(pattern, rest):
             return "❌ bearer 认证的 token 必须用单引号 '...' 包裹。" + quote_hint
 
     elif auth_type == "sso":
-        # sso 类型不检查凭证引号（参数是 provider 名 + 可选 base_url）
+        # sso 类型不检查凭证引号（参数是 provider 名 + base_url）
         return None
 
     else:
@@ -274,9 +274,9 @@ def _get_configured_systems() -> list[str]:
 
 async def cmd_bind(user_id: str, args: list[str]) -> str:
     """绑定凭证：
-        /vault bind <system> basic '<username>' '<password>' [<base_url>]
-        /vault bind <system> bearer '<token>' [<base_url>]
-        /vault bind <system> sso <provider> [<base_url>]
+        /vault bind <system> basic '<username>' '<password>' <base_url>
+        /vault bind <system> bearer '<token>' <base_url>
+        /vault bind <system> sso <provider> <base_url>
         /vault bind <provider_name> basic '<username>' '<password>'
 
     若目标名称匹配内置 SSO provider 名，basic 绑定视为 provider 账密（多 system 共享）。
@@ -288,9 +288,9 @@ async def cmd_bind(user_id: str, args: list[str]) -> str:
     configured = _get_configured_systems()
     usage = (
         f"用法:\n"
-        f"  {CMD_PREFIX} bind <system> basic '<username>' '<password>' [<base_url>]\n"
-        f"  {CMD_PREFIX} bind <system> bearer '<token>' [<base_url>]\n"
-        f"  {CMD_PREFIX} bind <system> sso <provider> [<base_url>]\n"
+        f"  {CMD_PREFIX} bind <system> basic '<username>' '<password>' <base_url>\n"
+        f"  {CMD_PREFIX} bind <system> bearer '<token>' <base_url>\n"
+        f"  {CMD_PREFIX} bind <system> sso <provider> <base_url>\n"
         f"  {CMD_PREFIX} bind <provider_name> basic '<username>' '<password>'\n"
         f"📝 凭证字段必须用单引号 '...' 包裹（禁止双引号）\n"
         f"可用 system: {', '.join(configured) if configured else '(空)'}"
@@ -358,36 +358,11 @@ async def cmd_bind(user_id: str, args: list[str]) -> str:
     # ================================================================
     # 2. system 绑定（target 是 system 名）
     # ================================================================
-    # 解析 base_url（最后一个参数如果是 http(s):// 开头则为 base_url）
-    base_url = ""
+    # 解析 base_url（最后一个参数必须是 http(s):// 开头）
     remaining = clean_args[2:] if len(clean_args) > 2 else []
-    if remaining and remaining[-1].startswith(("http://", "https://")):
-        base_url = remaining.pop().rstrip("/")
-
-    # 从 config.yaml 获取 base_url 默认值
-    if not base_url:
-        sys_cfg = _get_systems_config_raw().get(target, {})
-        base_url = sys_cfg.get("base_url", "")
-
-    # sso provider 无 base_url 时，从 login_trigger_url 提取域名
-    if not base_url and auth_type == AUTH_TYPE_SSO:
-        try:
-            from .sso_runner import get_sso_provider
-        except ImportError:
-            from sso_runner import get_sso_provider  # type: ignore[no-redef]
-        provider_cfg = get_sso_provider(remaining[0]) if remaining else None
-        if provider_cfg:
-            trigger = provider_cfg.get("login_trigger_url", "")
-            from urllib.parse import urlparse
-            parsed = urlparse(trigger)
-            if parsed.scheme and parsed.netloc:
-                base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-    if not base_url:
-        return (
-            f"❌ 无法确定 '{target}' 的 base_url。\n"
-            f"  请在命令末尾添加 base_url，或在 config.yaml 的 systems.{target}.base_url 中声明。\n\n{usage}"
-        )
+    if not remaining or not remaining[-1].startswith(("http://", "https://")):
+        return f"❌ 缺少 base_url，请在命令末尾添加系统 URL\n\n{usage}"
+    base_url = remaining.pop().rstrip("/")
 
     # --- 按 auth_type 组装凭证 ---
 
@@ -625,17 +600,17 @@ async def cmd_help(user_id: str, args: list[str]) -> str:
 首次使用流程:
   {CMD_PREFIX} set-pin <PIN>                              # 设置 PIN（≥8位，含小写/大写/数字/符号）
   {CMD_PREFIX} unlock <PIN>                                # 解锁 vault（有效期 30 分钟）
-  {CMD_PREFIX} bind <system> basic '<user>' '<pass>'       # 绑定 basic 认证
-  {CMD_PREFIX} bind <system> bearer '<token>'              # 绑定 bearer 认证
-  {CMD_PREFIX} bind <system> sso <provider> [<url>]        # 绑定 SSO 认证
+  {CMD_PREFIX} bind <system> basic '<user>' '<pass>' <url> # 绑定 basic 认证
+  {CMD_PREFIX} bind <system> bearer '<token>' <url>        # 绑定 bearer 认证
+  {CMD_PREFIX} bind <system> sso <provider> <url>          # 绑定 SSO 认证
   {CMD_PREFIX} bind <provider> basic '<user>' '<pass>'     # 存 SSO 登录账密（多 system 共享）
 
 常用命令:
   {CMD_PREFIX} unlock <PIN>                                # 解锁 vault
   {CMD_PREFIX} list                                        # 查看状态及系统绑定
-  {CMD_PREFIX} bind <system> basic '<user>' '<pass>'       # basic 认证
-  {CMD_PREFIX} bind <system> bearer '<token>'              # bearer 认证
-  {CMD_PREFIX} bind <system> sso <provider> [<url>]        # SSO 认证
+  {CMD_PREFIX} bind <system> basic '<user>' '<pass>' <url> # basic 认证
+  {CMD_PREFIX} bind <system> bearer '<token>' <url>        # bearer 认证
+  {CMD_PREFIX} bind <system> sso <provider> <url>          # SSO 认证
   {CMD_PREFIX} bind <provider> basic '<user>' '<pass>'     # 存 SSO 登录账密
   {CMD_PREFIX} unbind <system>                             # 解绑系统
   {CMD_PREFIX} providers                                   # 列出内置 SSO providers
@@ -651,8 +626,8 @@ SSO 会话管理:
 
 📝 凭证字段引号规则:
   bind 命令中 username / password / token 必须用【单引号】'...' 包裹
-    ✅ {CMD_PREFIX} bind jira basic 'yosef@example.com' 'MyP@ssw0rd!'
-    ✅ {CMD_PREFIX} bind jira bearer 'ATATT3xFfGF0abc...'
+    ✅ {CMD_PREFIX} bind jira basic 'yosef@example.com' 'MyP@ssw0rd!' https://ticket.example.com
+    ✅ {CMD_PREFIX} bind jira bearer 'ATATT3xFfGF0abc...' https://ticket.example.com
     ❌ {CMD_PREFIX} bind jira basic yosef@example.com MyPassword    (裸写会被拒绝)
     ❌ {CMD_PREFIX} bind jira bearer "ATATT..."                     (双引号会被拒绝)
   单引号内除 ' 外的任何字符都会被原样保留（$、\\、!、# 等无需转义）

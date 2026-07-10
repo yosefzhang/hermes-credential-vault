@@ -72,53 +72,45 @@ def _get_vault_dir(plugin_cfg: dict) -> Path:
 def _normalize_systems(raw_systems) -> dict:
     """规范化 config.yaml 里的 systems 字段。
 
-    可接受两种格式（尽量宽容）：
+    可接受两种格式：
+      # 列表格式（推荐）- 只声明系统名
       systems:
-        jira:
-          base_url: https://xxx
-      # 或（简写）
+        - jira
+        - confluence
+        - devops
+
+      # 字典格式（向后兼容）- 可指定可选字段
       systems:
-        jira: https://xxx
+        devops:
+          sso_provider: quectel_sso  # 可选：预指定 SSO provider
 
-    v0.2.0 新增可选字段（dict 形式才支持）：
-      - auth: basic|bearer|sso_cookie（默认 basic/bearer 由 bind 时决定）
-      - sso_provider: 引用 sso_providers 下的 provider 名（仅 auth=sso_cookie 有意义）
-
-    非 https:// 开头的 base_url 会记 warning 但仍然保留。
+    v0.4.0 起 base_url 不再在 config.yaml 中配置，改为 bind 时指定。
     """
     result: dict = {}
-    if not isinstance(raw_systems, dict):
+
+    # 列表格式：["jira", "confluence", "devops"]
+    if isinstance(raw_systems, list):
+        for name in raw_systems:
+            if not name or not isinstance(name, str):
+                continue
+            name_lower = name.strip().lower()
+            result[name_lower] = {}
         return result
 
-    for name, spec in raw_systems.items():
-        if not name or not isinstance(name, str):
-            continue
-        name_lower = name.strip().lower()
+    # 字典格式（向后兼容）
+    if isinstance(raw_systems, dict):
+        for name, spec in raw_systems.items():
+            if not name or not isinstance(name, str):
+                continue
+            name_lower = name.strip().lower()
 
-        extras: dict = {}
-        if isinstance(spec, str):
-            base_url = spec.strip()
-        elif isinstance(spec, dict):
-            base_url = str(spec.get("base_url", "")).strip()
-            # 可选字段
-            if spec.get("auth"):
-                extras["auth"] = str(spec["auth"]).strip().lower()
-            if spec.get("sso_provider"):
-                extras["sso_provider"] = str(spec["sso_provider"]).strip().lower()
-        else:
-            logger.warning("systems.%s 配置格式非法（应为 string 或 dict），已跳过", name)
-            continue
-
-        if not base_url:
-            logger.warning("systems.%s 缺少 base_url，已跳过", name)
-            continue
-
-        if not base_url.startswith(("http://", "https://")):
-            logger.warning("systems.%s.base_url 未以 http(s):// 开头: %s", name, base_url)
-
-        entry = {"base_url": base_url.rstrip("/")}
-        entry.update(extras)
-        result[name_lower] = entry
+            extras: dict = {}
+            if isinstance(spec, dict):
+                # 可选字段
+                if spec.get("sso_provider"):
+                    extras["sso_provider"] = str(spec["sso_provider"]).strip().lower()
+            result[name_lower] = extras
+        return result
 
     return result
 

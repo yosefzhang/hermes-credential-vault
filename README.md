@@ -35,24 +35,18 @@ plugins:
       # 可选：自定义 vault 存储目录（支持 {profile} 占位符）
       storage_dir: ~/.config/hermes-credential-vault/{profile}-vault
 
-      # 声明本插件管理的系统（只需 base_url，auth_type 通过 bind 命令指定）
+      # 声明本插件管理的系统（只需系统名，base_url 在 bind 时指定）
       systems:
-        jira:
-          base_url: https://ticket.example.com
-        confluence:
-          base_url: https://conf.example.com
-        pms: https://pms.example.com  # 简写格式
-
-        # SSO 系统可选：指定 sso_provider（不指定则 bind 时必须指定）
-        devops:
-          base_url: https://devops.example.com
-          sso_provider: quectel_sso  # 可选：预指定 provider
+        - jira
+        - confluence
+        - pms
+        - devops
 ```
 
 **说明**：
-- `base_url` 是必填的，`auth` 和 `sso_provider` 是可选的
-- auth_type（basic/bearer/sso）通过 `/vault bind` 命令动态指定
-- 如果 SSO 系统配置了 `sso_provider`，`sso-login` 时会自动使用；否则需要在 bind 时指定
+- `systems` 只需声明系统名列表
+- `base_url` 在 `/vault bind` 时由用户指定，加密存储
+- 每个用户可以使用不同的 base_url（如测试/生产环境）
 
 ### 3. 重启 Gateway
 
@@ -118,7 +112,7 @@ hermes gateway restart --profile <profile_name>
 
 ### 凭证绑定
 
-#### `/vault bind <system> basic '<username>' '<password>' [<base_url>]`
+#### `/vault bind <system> basic '<username>' '<password>' <base_url>`
 
 绑定 Basic 认证凭证。
 
@@ -126,37 +120,37 @@ hermes gateway restart --profile <profile_name>
   - `<system>` — 系统名（需在 config.yaml 中声明）
   - `'<username>'` — 用户名（必须用单引号包裹）
   - `'<password>'` — 密码（必须用单引号包裹）
-  - `[<base_url>]` — 可选，覆盖 config.yaml 中的 base_url
+  - `<base_url>` — 系统 URL（必填）
 - **示例**:
   ```
-  /vault bind jira basic 'yosef@example.com' 'MyP@ssw0rd!'
+  /vault bind jira basic 'yosef@example.com' 'MyP@ssw0rd!' https://ticket.example.com
   /vault bind pms basic 'admin' 'secret123' https://pms.custom.com
   ```
 
-#### `/vault bind <system> bearer '<token>' [<base_url>]`
+#### `/vault bind <system> bearer '<token>' <base_url>`
 
 绑定 Bearer Token 凭证。
 
 - **参数**:
   - `<system>` — 系统名
   - `'<token>'` — API Token（必须用单引号包裹）
-  - `[<base_url>]` — 可选，覆盖 base_url
+  - `<base_url>` — 系统 URL（必填）
 - **示例**:
   ```
-  /vault bind jira bearer 'ATATT3xFfGF0abcdef...'
+  /vault bind jira bearer 'ATATT3xFfGF0abcdef...' https://ticket.example.com
   ```
 
-#### `/vault bind <system> sso <provider> [<base_url>]`
+#### `/vault bind <system> sso <provider> <base_url>`
 
 绑定 SSO 认证（声明系统使用哪个 SSO provider）。
 
 - **参数**:
   - `<system>` — 系统名
   - `<provider>` — SSO provider 名（通过 `/vault providers` 查看）
-  - `[<base_url>]` — 可选，覆盖 base_url
+  - `<base_url>` — 系统 URL（必填）
 - **示例**:
   ```
-  /vault bind devops sso quectel_sso
+  /vault bind devops sso quectel_sso https://devops.example.com
   ```
 
 #### `/vault bind <provider> basic '<username>' '<password>'`
@@ -240,7 +234,7 @@ hermes gateway restart --profile <profile_name>
 ```
 1. /vault set-pin <PIN>           # 首次设置 PIN
 2. /vault unlock <PIN>            # 解锁 vault
-3. /vault bind jira basic 'user' 'pass'  # 绑定凭证
+3. /vault bind jira basic 'user' 'pass' https://ticket.example.com  # 绑定凭证
 4. 直接提问即可                    # Hermes 自动调用 API
 ```
 
@@ -249,8 +243,8 @@ hermes gateway restart --profile <profile_name>
 ```
 1. /vault set-pin <PIN>
 2. /vault unlock <PIN>
-3. /vault bind quectel_sso basic 'user' 'pass'  # 绑定 provider 账密
-4. /vault bind devops sso quectel_sso           # 声明系统走 SSO
+3. /vault bind quectel_sso basic 'user' 'pass'                    # 绑定 provider 账密
+4. /vault bind devops sso quectel_sso https://devops.example.com  # 声明系统走 SSO
 5. /vault sso-login devops                      # 触发 SSO 登录
 6. 直接提问即可
 ```
