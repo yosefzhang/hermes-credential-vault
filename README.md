@@ -35,23 +35,24 @@ plugins:
       # 可选：自定义 vault 存储目录（支持 {profile} 占位符）
       storage_dir: ~/.config/hermes-credential-vault/{profile}-vault
 
-      # 声明本插件管理的系统
+      # 声明本插件管理的系统（只需 base_url，auth_type 通过 bind 命令指定）
       systems:
-        # Basic/Bearer 认证系统
         jira:
           base_url: https://ticket.example.com
         confluence:
           base_url: https://conf.example.com
+        pms: https://pms.example.com  # 简写格式
 
-        # SSO 认证系统（需要 sso_provider）
+        # SSO 系统可选：指定 sso_provider（不指定则 bind 时必须指定）
         devops:
           base_url: https://devops.example.com
-          auth: sso
-          sso_provider: quectel_sso
-
-        # 简写格式（仅 base_url）
-        pms: https://pms.example.com
+          sso_provider: quectel_sso  # 可选：预指定 provider
 ```
+
+**说明**：
+- `base_url` 是必填的，`auth` 和 `sso_provider` 是可选的
+- auth_type（basic/bearer/sso）通过 `/vault bind` 命令动态指定
+- 如果 SSO 系统配置了 `sso_provider`，`sso-login` 时会自动使用；否则需要在 bind 时指定
 
 ### 3. 重启 Gateway
 
