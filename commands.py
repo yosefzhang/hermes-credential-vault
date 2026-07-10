@@ -102,8 +102,6 @@ async def dispatch_vault_command(text: str, user_id: str, event) -> str:
         "unlock": cmd_unlock,
         "list": cmd_list,
         "help": cmd_help,
-        # v0.2.0: SSO Session 管理
-        "sso-login": cmd_sso_login,
         "sso-status": cmd_sso_status,
         "sso-logout": cmd_sso_logout,
     }
@@ -597,11 +595,11 @@ async def cmd_help(user_id: str, args: list[str]) -> str:
   {CMD_PREFIX} unbind <system>                             # 解绑系统
   {CMD_PREFIX} help                                        # 显示本帮助
 
-SSO 会话管理:
-  {CMD_PREFIX} sso-login <system>                          # 用 provider 账密登录 SSO，产生 cookie 会话
+SSO 会话管理（自动登录）:
   {CMD_PREFIX} sso-status [<system>]                       # 查看 SSO 会话状态
   {CMD_PREFIX} sso-logout <system>                         # 删除本地 SSO 会话
-  💡 多个 system 共享同一个 sso_provider 时，一次 sso-login 覆盖所有关联 system。
+  💡 SSO 登录由 call_external_system 工具自动完成，无需手动 sso-login。
+  💡 多个 system 共享同一个 sso_provider 时，一次登录覆盖所有关联 system。
 
 可用系统: {systems_line}
 

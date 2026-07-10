@@ -184,16 +184,7 @@ hermes gateway restart --profile <profile_name>
 
 ### SSO 会话管理
 
-#### `/vault sso-login <system>`
-
-触发 SSO 浏览器登录，获取 cookie 会话。
-
-- **参数**: `<system>` — SSO 系统名
-- **前提**: 需先绑定 provider 账密
-- **示例**:
-  ```
-  /vault sso-login devops
-  ```
+SSO 登录由 `call_external_system` 工具自动完成，用户无需手动操作。
 
 #### `/vault sso-status [<system>]`
 
@@ -212,7 +203,7 @@ hermes gateway restart --profile <profile_name>
 
 - **参数**: `<system>` — SSO 系统名
 - **注意**: 由于 session 按 provider 存储，logout 会影响所有共享该 provider 的系统
- - **示例**:
+- **示例**:
   ```
   /vault sso-logout devops
   ```
@@ -235,8 +226,7 @@ hermes gateway restart --profile <profile_name>
 2. /vault unlock <PIN>
 3. /vault bind quectel_sso basic 'user' 'pass'                    # 绑定 provider 账密
 4. /vault bind devops sso quectel_sso https://devops.example.com  # 声明系统走 SSO
-5. /vault sso-login devops                      # 触发 SSO 登录
-6. 直接提问即可
+5. 直接提问即可  # Hermes 自动完成 SSO 登录
 ```
 
 ## 测试

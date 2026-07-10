@@ -234,16 +234,21 @@ async def call_external_system_handler(args: dict, **kwargs) -> str:
         try:
             session = _vault.load_session(sso_provider, key)
         except NotBoundError:
-            return json.dumps(
-                {
-                    "error": "sso_not_logged_in",
-                    "message": (
-                        f"system '{system}' 需要 SSO 登录（provider={sso_provider}）。"
-                        f"请在飞书私聊发送 /vault sso-login {system}"
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            # 尝试自动 SSO 登录
+            ok, err = await _auto_sso_login(user_id, system, sso_provider, key)
+            if not ok:
+                return json.dumps(
+                    {"error": "sso_login_failed", "message": err},
+                    ensure_ascii=False,
+                )
+            # 登录成功，重试加载 session
+            try:
+                session = _vault.load_session(sso_provider, key)
+            except NotBoundError:
+                return json.dumps(
+                    {"error": "sso_login_failed", "message": "登录完成但未获取到有效的 session"},
+                    ensure_ascii=False,
+                )
         cookies = session.get("cookies") or []
 
         _audit.append(user_id, "api_call", f"{system} {method} {path} [sso:{sso_provider}]", key)
@@ -329,3 +334,60 @@ def transform_tool_result_hook(result: str, tool_name: str, **kwargs) -> Optiona
         return redacted
 
     return None
+
+
+async def _auto_sso_login(user_id: str, system: str, provider: str, key: bytes) -> tuple[bool, str]:
+    """自动 SSO 登录：从 vault 读取 provider 账密，执行 Playwright 登录，缓存 session。
+
+    Returns:
+        (True, "")  — 成功
+        (False, reason) — 失败及原因
+    """
+    # 1. 从 vault 读取 provider 账密
+    try:
+        cred = _vault.load_credential(provider, key)
+        username = cred.get("username") or ""
+        password = cred.get("password") or ""
+    except NotBoundError:
+        return False, (
+            f"SSO provider '{provider}' 未绑定账密，"
+            f"请在飞书私聊发送 /vault bind {provider} basic '<user>' '<pass>'"
+        )
+
+    if not username or not password:
+        return False, f"SSO provider '{provider}' 的账密为空，请重新 /vault bind"
+
+    # 2. 获取 provider 配置
+    try:
+        from .sso_runner import get_sso_provider, run_sso_login, build_session_record, SsoLoginError
+    except ImportError:
+        from sso_runner import get_sso_provider, run_sso_login, build_session_record, SsoLoginError  # type: ignore[no-redef]
+
+    provider_cfg = get_sso_provider(provider)
+    if not provider_cfg:
+        return False, f"SSO provider '{provider}' 未找到，请检查 sso_runner.py"
+
+    # 3. 执行登录
+    try:
+        cookies = await run_sso_login(provider_cfg, username, password)
+    except SsoLoginError as e:
+        _audit.append(user_id, "sso_login_fail", f"{system} via {provider}: {e}", key)
+        return False, f"SSO 自动登录失败: {e}"
+    except Exception as e:
+        logger.exception("auto_sso_login 异常: %s", e)
+        return False, f"SSO 登录异常: {type(e).__name__}"
+    finally:
+        username = ""
+        password = ""
+
+    if not cookies:
+        return False, "SSO 登录完成但未获取到 cookie"
+
+    # 4. 保存 session（覆盖所有共享该 provider 的系统）
+    token_cookie_name = provider_cfg.get("token_cookie_name", "")
+    session_record = build_session_record(provider, cookies, token_cookie_name)
+    _vault.store_session(provider, session_record, key)
+
+    _audit.append(user_id, "sso_login_ok", f"{system} via {provider} (auto, {len(cookies)} cookies)", key)
+    logger.info("auto_sso_login: user=%s system=%s provider=%s ok", user_id, system, provider)
+    return True, ""
