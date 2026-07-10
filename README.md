@@ -92,7 +92,7 @@ hermes gateway restart --profile <profile_name>
 
 #### `/vault list`
 
-查看 vault 状态及系统绑定情况。
+查看 vault 状态、系统绑定情况和可用 SSO providers。
 
 - **参数**: 无
 - **示例**:
@@ -146,7 +146,7 @@ hermes gateway restart --profile <profile_name>
 
 - **参数**:
   - `<system>` — 系统名
-  - `<provider>` — SSO provider 名（通过 `/vault providers` 查看）
+  - `<provider>` — SSO provider 名（通过 `/vault list` 查看可用 providers）
   - `<base_url>` — 系统 URL（必填）
 - **示例**:
   ```
@@ -212,19 +212,9 @@ hermes gateway restart --profile <profile_name>
 
 - **参数**: `<system>` — SSO 系统名
 - **注意**: 由于 session 按 provider 存储，logout 会影响所有共享该 provider 的系统
-- **示例**:
+ - **示例**:
   ```
   /vault sso-logout devops
-  ```
-
-#### `/vault providers`
-
-列出插件内置的 SSO providers。
-
-- **参数**: 无
-- **示例**:
-  ```
-  /vault providers
   ```
 
 ## 使用流程

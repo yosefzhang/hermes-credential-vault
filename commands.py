@@ -106,7 +106,6 @@ async def dispatch_vault_command(text: str, user_id: str, event) -> str:
         "sso-login": cmd_sso_login,
         "sso-status": cmd_sso_status,
         "sso-logout": cmd_sso_logout,
-        "providers": cmd_providers,
     }
 
     handler = handlers.get(subcommand)
@@ -503,9 +502,9 @@ async def cmd_list(user_id: str, args: list[str]) -> str:
         from .sso_runner import list_sso_providers as _list_ssop
     except ImportError:
         from sso_runner import list_sso_providers as _list_ssop  # type: ignore[no-redef]
-    provider_names = set(_list_ssop())
-    bound_providers = bound & provider_names
-    bound_systems = bound - provider_names
+    all_providers = _list_ssop()
+    bound_providers = bound & set(all_providers)
+    bound_systems = bound - set(all_providers)
 
     lines.append("📋 系统列表:")
     for s in sorted(set(configured) | bound_systems):
@@ -516,11 +515,12 @@ async def cmd_list(user_id: str, args: list[str]) -> str:
         else:
             lines.append(f"  ❌ (未绑定) {s}{url_tag}")
 
-    if bound_providers:
+    if all_providers:
         lines.append("")
-        lines.append("📋 SSO Provider 账密:")
-        for p in sorted(bound_providers):
-            lines.append(f"  ✅ {p}")
+        lines.append("📋 SSO Providers:")
+        for p in sorted(all_providers):
+            status = "✅ (已绑定)" if p in bound_providers else "❌ (未绑定)"
+            lines.append(f"  {status} {p}")
 
     # 底部：展示 bind 命令
     unbound_systems = set(configured) - bound_systems
@@ -573,24 +573,6 @@ async def cmd_unbind(user_id: str, args: list[str]) -> str:
     return f"✅ 已解绑 {target}"
 
 
-async def cmd_providers(user_id: str, args: list[str]) -> str:
-    """列出插件内置的 SSO providers：/vault providers"""
-    try:
-        from .sso_runner import list_sso_providers, get_sso_provider
-    except ImportError:
-        from sso_runner import list_sso_providers, get_sso_provider  # type: ignore[no-redef]
-    providers = list_sso_providers()
-    if not providers:
-        return "📋 当前无内置 SSO provider"
-    lines = ["📋 内置 SSO providers:"]
-    for p in providers:
-        cfg = get_sso_provider(p)
-        url = (cfg or {}).get("login_trigger_url", "?")
-        lines.append(f"  {p}")
-        lines.append(f"    触发 URL: {url}")
-    return "\n".join(lines)
-
-
 async def cmd_help(user_id: str, args: list[str]) -> str:
     """显示帮助信息：/vault help"""
     configured = _get_configured_systems()
@@ -613,7 +595,6 @@ async def cmd_help(user_id: str, args: list[str]) -> str:
   {CMD_PREFIX} bind <system> sso <provider> <url>          # SSO 认证
   {CMD_PREFIX} bind <provider> basic '<user>' '<pass>'     # 存 SSO 登录账密
   {CMD_PREFIX} unbind <system>                             # 解绑系统
-  {CMD_PREFIX} providers                                   # 列出内置 SSO providers
   {CMD_PREFIX} help                                        # 显示本帮助
 
 SSO 会话管理:
